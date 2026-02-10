@@ -1,0 +1,36 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Logs & temp
+logs/
+temp_files/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data artifacts
+data/headers_report.json
+data/normalization_map.json
+
+# Dev settings files (created by scripts/create_seting.py)
+*_seting.py
+!scripts/create_seting.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+postgres_data/
+
+nul

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(findstr:*)",
+      "Bash(python scripts/scan_headers.py:*)",
+      "Bash(where:*)",
+      "Bash(C:Users1AppDataLocalMicrosoftWindowsAppspython3.exe --version)",
+      "Bash(cmd /c \"python --version\")",
+      "Bash(docker-compose build:*)",
+      "Bash(docker info:*)",
+      "Bash(docker compose build:*)",
+      "Bash(docker compose up:*)",
+      "Bash(docker exec:*)",
+      "Bash(wc:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker volume rm:*)",
+      "Bash(docker cp:*)",
+      "Bash(docker restart:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(docker-compose up:*)"
+    ]
+  }
+}
