@@ -168,9 +168,9 @@ def _get_status_color(match_percentage: float, threshold: int = 70) -> str:
         return COLOR_RED
 
 
-def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold: int) -> None:
+def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold: int, min_percentage: float = 80.0) -> None:
     """
-    Создание листа "Сводка" с таблицей всех найденных моделей.
+    Создание листа "Сводка" с таблицей найденных моделей.
 
     Колонки:
     - № — порядковый номер
@@ -180,6 +180,9 @@ def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold
     - % совпадения — процент совпадения характеристик
     - Статус — эмодзи (✅ / ⚠️ / ❌)
     - Примечания — краткое описание несовпадений
+
+    Args:
+        min_percentage: Минимальный процент совпадения для включения в отчет (по умолчанию 80%)
     """
     ws = wb.active
     ws.title = "Сводка"
@@ -202,10 +205,15 @@ def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold
         for category_name in ["ideal", "partial", "not_matched"]:
             matches = result["matches"].get(category_name, [])
             for match in matches:
+                percentage = match["match_percentage"]
+
+                # ФИЛЬТР: Показываем только модели с совпадением >= min_percentage
+                if percentage < min_percentage:
+                    continue
+
                 model_name = match["model_name"]
                 source_file = match["source_file"]
                 version = _parse_version_from_source(source_file)
-                percentage = match["match_percentage"]
                 status_emoji = _get_status_emoji(percentage, threshold)
 
                 # Примечания: что не совпало
@@ -370,6 +378,7 @@ def generate_report(
     match_results: Dict[str, Any],
     output_dir: str = "temp_files",
     threshold: int = 70,
+    min_percentage: float = 80.0,
 ) -> str:
     """
     Генерация Excel отчета с результатами сопоставления.
@@ -379,37 +388,40 @@ def generate_report(
         match_results: Результаты сопоставления от matcher.find_matching_models()
         output_dir: Папка для сохранения файла
         threshold: Порог для частичного совпадения (из config)
+        min_percentage: Минимальный процент совпадения для включения в отчет (по умолчанию 80%)
 
     Returns:
         Путь к сгенерированному Excel файлу
 
     Структура файла:
-    - Лист 1: "Сводка" — все найденные модели с процентами и статусами
-    - Листы 2+: "Детальное сравнение - <Модель>" — по одному для каждой идеальной/частичной модели
+    - Лист 1: "Сводка" — модели с совпадением >= min_percentage
+    - Листы 2+: "Детальное сравнение - <Модель>" — только для моделей >= min_percentage
     """
-    logger.info("Starting Excel report generation...")
+    logger.info(f"Starting Excel report generation (min_percentage={min_percentage}%)...")
 
     wb = Workbook()
 
-    # Лист 1: Сводка
-    _create_summary_sheet(wb, match_results, threshold)
+    # Лист 1: Сводка (с фильтром по min_percentage)
+    _create_summary_sheet(wb, match_results, threshold, min_percentage)
 
-    # Листы 2+: Детальное сравнение (только для идеальных и частичных совпадений)
+    # Листы 2+: Детальное сравнение (только для моделей >= min_percentage)
     detailed_count = 0
     max_detailed_sheets = 50  # Ограничение для производительности
 
     for result in match_results.get("results", []):
         requirement = result["requirement"]
 
-        # Идеальные совпадения
+        # Идеальные совпадения (с фильтром >= min_percentage)
         for match in result["matches"].get("ideal", []):
             if detailed_count >= max_detailed_sheets:
                 break
-            _create_detailed_sheet(wb, match, requirement)
-            detailed_count += 1
+            if match["match_percentage"] >= min_percentage:
+                _create_detailed_sheet(wb, match, requirement)
+                detailed_count += 1
 
-        # Частичные совпадения (топ-3 для каждой позиции)
-        for match in result["matches"].get("partial", [])[:3]:
+        # Частичные совпадения (топ-3 для каждой позиции, с фильтром >= min_percentage)
+        partial_filtered = [m for m in result["matches"].get("partial", []) if m["match_percentage"] >= min_percentage]
+        for match in partial_filtered[:3]:
             if detailed_count >= max_detailed_sheets:
                 break
             _create_detailed_sheet(wb, match, requirement)

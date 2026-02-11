@@ -165,6 +165,7 @@ async def handle_document(message: Message, bot: Bot) -> None:
             match_results=match_results,
             output_dir=TEMP_DIR,
             threshold=settings.match_threshold,
+            min_percentage=80.0,  # Показывать только модели с совпадением >= 80%
         )
 
         # Save search history (non-critical — don't break main flow)
