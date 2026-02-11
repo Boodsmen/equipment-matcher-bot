@@ -10,6 +10,7 @@
 """
 
 import re
+import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -57,35 +58,75 @@ def compare_spec_values(
         return bool(model_value) == required_value
 
     # Числовые характеристики (порты, мощность, память)
-    # Try to convert string numbers to float for comparison
-    req_num = None
-    model_num = None
+    def extract_number(val):
+        """
+        Извлечение числового значения из различных форматов.
 
-    if isinstance(required_value, (int, float)):
-        req_num = float(required_value)
-    elif isinstance(required_value, str):
-        try:
-            req_num = float(required_value.replace(',', '.'))
-        except (ValueError, AttributeError):
-            pass
+        Поддерживаемые форматы:
+        - Простые числа: 24, 200.5, -40
+        - Строки с единицами: "24 порта", "200 Вт", "2 ГБ"
+        - Дробные числа: "1.5 Гбит/с", "2,5 ГБ" (точка и запятая)
+        - Диапазоны: "10-20" → 20 (максимум), "от 100 до 200" → 200
+        - Умножение: "2x4" → 8, "4 блока по 8" → 32
+        - Отрицательные: "-40°C" → -40
+        - Префиксы: "до 1000" → 1000, "не менее 500" → 500
+        """
+        if isinstance(val, (int, float)):
+            return float(val)
 
-    if isinstance(model_value, (int, float)):
-        model_num = float(model_value)
-    elif isinstance(model_value, str):
-        try:
-            model_num = float(model_value.replace(',', '.'))
-        except (ValueError, AttributeError):
-            pass
+        if not isinstance(val, str):
+            return None
 
-    # If both are numbers, do numeric comparison
+        # Замена запятых на точки для дробных чисел
+        val_normalized = val.replace(',', '.')
+
+        # Диапазоны: "10-20", "от 100 до 200"
+        # Берем максимальное значение (наиболее строгое требование)
+        range_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:-|до)\s*(\d+(?:\.\d+)?)', val_normalized)
+        if range_match:
+            return max(float(range_match.group(1)), float(range_match.group(2)))
+
+        # Умножение: "2x4", "4 блока по 8 портов"
+        mult_match = re.search(r'(\d+)\s*(?:x|×|блок\w*\s+по)\s*(\d+)', val_normalized, re.IGNORECASE)
+        if mult_match:
+            return float(mult_match.group(1)) * float(mult_match.group(2))
+
+        # Префиксы: "до 1000", "не менее 500", "минимум 100"
+        prefix_match = re.search(r'(?:до|не\s+менее|минимум|максимум)\s+(\d+(?:\.\d+)?)', val_normalized, re.IGNORECASE)
+        if prefix_match:
+            return float(prefix_match.group(1))
+
+        # Простое число (целое или дробное) в строке
+        # Ищем первое число, включая отрицательные
+        match = re.search(r"[-+]?\d*\.?\d+", val_normalized)
+        if match:
+            return float(match.group())
+
+        return None
+
+    # Извлекаем числовые значения из обоих параметров
+    req_num = extract_number(required_value)
+    model_num = extract_number(model_value)
+
+    # Если оба значения числовые - выполняем числовое сравнение
     if req_num is not None and model_num is not None:
         if allow_lower:
             # Допускаем 5% отклонение вниз
             threshold = req_num * 0.95
-            return model_num >= threshold
+            result = model_num >= threshold
+            logger.debug(
+                f"Numeric comparison for '{key}': required={req_num}, model={model_num}, "
+                f"threshold={threshold:.2f}, allow_lower=True, result={result}"
+            )
+            return result
         else:
             # Строгое: модель должна иметь >= требуемого
-            return model_num >= req_num
+            result = model_num >= req_num
+            logger.debug(
+                f"Numeric comparison for '{key}': required={req_num}, model={model_num}, "
+                f"allow_lower=False, result={result}"
+            )
+            return result
 
     # Строковые характеристики (категории, названия)
     if isinstance(required_value, str) and isinstance(model_value, str):
@@ -369,6 +410,13 @@ async def find_matching_models(requirements: Dict[str, Any]) -> Dict[str, Any]:
         f"Starting matching with threshold={threshold}%, allow_lower={allow_lower}"
     )
 
+    # Mapping категорий к подкатегориям для расширенного поиска
+    CATEGORY_SUBCATEGORIES = {
+        "Коммутаторы": ["Управляемый", "Неуправляемый", "Промышленный"],
+        "Маршрутизаторы": ["Универсальный шлюз безопасности", "Модульный"],
+        # Добавить другие категории по мере необходимости
+    }
+
     for idx, item in enumerate(items, 1):
         model_name = item.get("model_name")
         category = item.get("category")
@@ -381,34 +429,44 @@ async def find_matching_models(requirements: Dict[str, Any]) -> Dict[str, Any]:
         # ────────────── СТРАТЕГИЯ ПОИСКА ──────────────
 
         candidates = []
+        search_start_time = time.time()
 
         # 1. Если указано точное название модели
         if model_name:
             logger.info(f"Searching by model_name: {model_name}")
             candidates = await get_model_by_name(model_name)
-            logger.info(f"Found {len(candidates)} models by name")
+            search_time = time.time() - search_start_time
+            logger.info(f"Found {len(candidates)} models by name in {search_time:.3f}s")
 
         # 2. Если указана категория (но не модель)
         elif category:
             logger.info(f"Searching by category: {category}")
             candidates = await get_models_by_category(category)
+            initial_count = len(candidates)
 
-            # Expand search for switch categories
-            # In CSV, switches are categorized as "Управляемый" (managed) rather than "Коммутаторы" (switches)
-            if category == "Коммутаторы":
-                managed_switches = await get_models_by_category("Управляемый")
-                candidates.extend(managed_switches)
-                logger.info(f"Found {len(candidates)} models (including 'Управляемый' subcategory)")
+            # Расширенный поиск по подкатегориям
+            if category in CATEGORY_SUBCATEGORIES:
+                for subcategory in CATEGORY_SUBCATEGORIES[category]:
+                    subcategory_models = await get_models_by_category(subcategory)
+                    candidates.extend(subcategory_models)
+                    logger.debug(f"Added {len(subcategory_models)} models from subcategory '{subcategory}'")
+
+                search_time = time.time() - search_start_time
+                logger.info(
+                    f"Found {len(candidates)} models (base: {initial_count}, "
+                    f"subcategories: {len(candidates) - initial_count}) in {search_time:.3f}s"
+                )
             else:
-                logger.info(f"Found {len(candidates)} models in category")
+                search_time = time.time() - search_start_time
+                logger.info(f"Found {len(candidates)} models in category in {search_time:.3f}s")
 
         # 3. Поиск по всей БД (если ничего не указано)
         else:
             logger.info("Searching across all models (no model_name or category)")
             all_models = await get_all_models()
-            # Ограничиваем для производительности (топ-200)
-            candidates = list(all_models[:200])
-            logger.info(f"Limited to {len(candidates)} models for performance")
+            candidates = list(all_models)
+            search_time = time.time() - search_start_time
+            logger.info(f"Found {len(candidates)} models in database in {search_time:.3f}s")
 
         # ────────────── ДЕДУПЛИКАЦИЯ ──────────────
 

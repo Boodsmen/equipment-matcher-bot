@@ -8,12 +8,16 @@
 Форматирование:
 - Заголовки: жирный шрифт, серая заливка
 - Статусы: цветовая кодировка (зеленый ✅ / желтый ⚠️ / красный ❌)
+- Версии: цветовая кодировка (finalUPD - зеленый, v29+ - желтый, старые - оранжевый)
 - Автоподбор ширины колонок
 - Фильтры на первом листе
 """
 
+import json
 import os
+import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
@@ -28,6 +32,94 @@ COLOR_GREEN = "C6EFCE"  # Светло-зеленый (совпадает)
 COLOR_YELLOW = "FFEB9C"  # Светло-желтый (частичное)
 COLOR_RED = "FFC7CE"  # Светло-красный (не совпадает)
 COLOR_GRAY = "D9D9D9"  # Серый (заголовок)
+COLOR_ORANGE = "FFD699"  # Оранжевый (старые версии)
+
+# Загрузка reverse mapping для читаемых названий характеристик
+_REVERSE_MAPPING_CACHE = None
+
+
+def _load_reverse_mapping() -> Dict[str, str]:
+    """Загрузка reverse_normalization_map.json (с кешированием)."""
+    global _REVERSE_MAPPING_CACHE
+    if _REVERSE_MAPPING_CACHE is not None:
+        return _REVERSE_MAPPING_CACHE
+
+    try:
+        reverse_map_path = Path(__file__).parent.parent / "data" / "reverse_normalization_map.json"
+        with open(reverse_map_path, "r", encoding="utf-8") as f:
+            _REVERSE_MAPPING_CACHE = json.load(f)
+        logger.debug(f"Loaded reverse mapping with {len(_REVERSE_MAPPING_CACHE)} keys")
+    except Exception as e:
+        logger.warning(f"Failed to load reverse_normalization_map.json: {e}")
+        _REVERSE_MAPPING_CACHE = {}
+
+    return _REVERSE_MAPPING_CACHE
+
+
+def _parse_version_from_source(source_file: str) -> str:
+    """
+    Извлечение читаемой версии из source_file.
+
+    Примеры:
+    - "v29" → "v29"
+    - "finalUPDv.1.2" → "finalUPD v1.2"
+    - "v21_new" → "v21 (new)"
+    - без версии → "—"
+    """
+    if not source_file:
+        return "—"
+
+    # finalUPDv.X.Y
+    m = re.search(r'finalUPDv\.(\d+)\.(\d+)', source_file)
+    if m:
+        return f"finalUPD v{m.group(1)}.{m.group(2)}"
+
+    # finalUPD без версии
+    if 'finalUPD' in source_file:
+        return "finalUPD"
+
+    # vNN или vNN.M
+    m = re.search(r'v(\d+)(?:\.(\d+))?', source_file)
+    if m:
+        version = f"v{m.group(1)}"
+        if m.group(2):
+            version += f".{m.group(2)}"
+        if '_new' in source_file:
+            version += " (new)"
+        return version
+
+    return source_file  # Fallback
+
+
+def _get_version_color(source_file: str) -> str:
+    """
+    Определение цвета для версии.
+
+    Правила:
+    - finalUPD* → зеленый
+    - v29+ → желтый
+    - v20-v28 → оранжевый
+    - остальное → None (без цвета)
+    """
+    if not source_file:
+        return None
+
+    # finalUPD - самая актуальная
+    if 'finalUPD' in source_file:
+        return COLOR_GREEN
+
+    # vNN
+    m = re.search(r'v(\d+)', source_file)
+    if m:
+        version_num = int(m.group(1))
+        if version_num >= 29:
+            return COLOR_YELLOW  # Новые версии
+        elif version_num >= 20:
+            return COLOR_ORANGE  # Старые версии
+        else:
+            return COLOR_RED  # Совсем старые
+
+    return None  # Без цвета
 
 
 def _auto_size_columns(ws) -> None:
@@ -84,7 +176,7 @@ def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold
     - № — порядковый номер
     - Позиция ТЗ — название требования из ТЗ
     - Модель — название модели
-    - Источник — source_file (v20, v29, ESR и т.д.)
+    - Версия — читаемая версия (v29, finalUPD v1.2) с цветовым кодированием
     - % совпадения — процент совпадения характеристик
     - Статус — эмодзи (✅ / ⚠️ / ❌)
     - Примечания — краткое описание несовпадений
@@ -93,7 +185,7 @@ def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold
     ws.title = "Сводка"
 
     # Заголовки
-    headers = ["№", "Позиция ТЗ", "Модель", "Источник", "% совпадения", "Статус", "Примечания"]
+    headers = ["№", "Позиция ТЗ", "Модель", "Версия", "% совпадения", "Статус", "Примечания"]
     ws.append(headers)
     _format_header(ws, row=1, columns=len(headers))
 
@@ -112,6 +204,7 @@ def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold
             for match in matches:
                 model_name = match["model_name"]
                 source_file = match["source_file"]
+                version = _parse_version_from_source(source_file)
                 percentage = match["match_percentage"]
                 status_emoji = _get_status_emoji(percentage, threshold)
 
@@ -126,16 +219,27 @@ def _create_summary_sheet(wb: Workbook, match_results: Dict[str, Any], threshold
                 notes_str = "; ".join(notes) if notes else "—"
 
                 # Запись строки
-                ws.append([row_num - 1, req_name, model_name, source_file, percentage, status_emoji, notes_str])
+                ws.append([row_num - 1, req_name, model_name, version, percentage, status_emoji, notes_str])
 
-                # Заливка строки по статусу
-                color = _get_status_color(percentage, threshold)
+                # Заливка строки по статусу совпадения
+                match_color = _get_status_color(percentage, threshold)
                 for col in range(1, len(headers) + 1):
                     ws.cell(row=row_num, column=col).fill = PatternFill(
-                        start_color=color, end_color=color, fill_type="solid"
+                        start_color=match_color, end_color=match_color, fill_type="solid"
                     )
 
-                # Форматирование процента (центр)
+                # Дополнительное выделение колонки "Версия" по актуальности версии
+                version_color = _get_version_color(source_file)
+                if version_color:
+                    ws.cell(row=row_num, column=4).fill = PatternFill(
+                        start_color=version_color, end_color=version_color, fill_type="solid"
+                    )
+                    # Жирный шрифт для актуальных версий
+                    if version_color == COLOR_GREEN:
+                        ws.cell(row=row_num, column=4).font = Font(bold=True)
+
+                # Форматирование процента и статуса (центр)
+                ws.cell(row=row_num, column=4).alignment = Alignment(horizontal="center")
                 ws.cell(row=row_num, column=5).alignment = Alignment(horizontal="center")
                 ws.cell(row=row_num, column=6).alignment = Alignment(horizontal="center")
 
@@ -154,22 +258,29 @@ def _create_detailed_sheet(wb: Workbook, match: Dict[str, Any], requirement: Dic
     """
     Создание листа детального сравнения для конкретной модели.
 
-    Колонки:
-    - Характеристика — канонический ключ (ports_1g_sfp, power_watt и т.д.)
-    - Требуется — значение из ТЗ
-    - В модели — значение из raw_specifications (исходное)
-    - Статус — эмодзи (✅ / ❌ / —)
+    Содержит:
+    1. Метаданные модели (название, категория, версия, процент совпадения)
+    2. Таблица сравнения характеристик с читаемыми названиями из reverse mapping
 
-    ВАЖНО: Используем raw_specifications для отображения, но сравнение идёт по specifications
+    Колонки:
+    - Характеристика — читаемое название из reverse_normalization_map.json
+    - Требуется — значение из ТЗ
+    - В модели — значение из specifications (нормализованное)
+    - Статус — эмодзи (✅ / ❌ / —)
     """
     model_name = match["model_name"]
     source_file = match["source_file"]
+    category = match.get("category", "—")
+    version = _parse_version_from_source(source_file)
+    percentage = match["match_percentage"]
 
     # Название листа (ограничение Excel: макс. 31 символ)
-    sheet_name = f"{model_name[:25]} ({source_file})"[:31]
+    sheet_name = f"{model_name[:20]} {version}"[:31]
     ws = wb.create_sheet(title=sheet_name)
 
-    # Заголовок листа
+    # ═══════════════ СЕКЦИЯ МЕТАДАННЫХ ═══════════════
+
+    # Заголовок
     ws.append([f"Детальное сравнение: {model_name}"])
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
     ws.cell(row=1, column=1).font = Font(bold=True, size=14)
@@ -177,36 +288,46 @@ def _create_detailed_sheet(wb: Workbook, match: Dict[str, Any], requirement: Dic
 
     ws.append([])  # Пустая строка
 
+    # Метаданные модели
+    ws.append(["Категория:", category])
+    ws.append(["Версия:", version])
+    ws.append(["% совпадения:", f"{percentage}%"])
+
+    # Выделение процента совпадения цветом
+    match_color = _get_status_color(percentage, 70)
+    ws.cell(row=5, column=2).fill = PatternFill(
+        start_color=match_color, end_color=match_color, fill_type="solid"
+    )
+    ws.cell(row=5, column=2).font = Font(bold=True, size=12)
+
+    # Жирный шрифт для меток
+    for row in range(3, 6):
+        ws.cell(row=row, column=1).font = Font(bold=True)
+
+    ws.append([])  # Пустая строка
+
+    # ═══════════════ СЕКЦИЯ СРАВНЕНИЯ ═══════════════
+
     # Заголовки таблицы
     headers = ["Характеристика", "Требуется", "В модели", "Статус"]
     ws.append(headers)
-    _format_header(ws, row=3, columns=len(headers))
+    header_row = 7
+    _format_header(ws, row=header_row, columns=len(headers))
 
     required_specs = requirement.get("required_specs", {})
     model_specs = match["specifications"]
-    raw_specs = match.get("raw_specifications", {})
     matched_specs = match["matched_specs"]
     missing_specs = match["missing_specs"]
     different_specs = match["different_specs"]
 
-    # Создаём обратный маппинг: канонический ключ -> исходное название колонки
-    # (для отображения читаемого названия характеристики)
-    canonical_to_readable = {}
-    for key in required_specs.keys():
-        # Пытаемся найти в raw_specifications название колонки, которое соответствует этому ключу
-        # (это упрощенная версия, в идеале нужен reverse normalization_map)
-        canonical_to_readable[key] = key.replace("_", " ").title()
+    # Загружаем reverse mapping для читаемых названий
+    reverse_mapping = _load_reverse_mapping()
 
-    row_num = 4
+    row_num = header_row + 1
     for key, required_value in required_specs.items():
-        readable_key = canonical_to_readable.get(key, key)
+        # Используем reverse mapping для читаемого названия
+        readable_key = reverse_mapping.get(key, key.replace("_", " ").title())
         model_value = model_specs.get(key)
-
-        # Для отображения используем raw_specifications
-        # Ищем в raw_specs значение по каноническому ключу (это упрощение, в идеале нужен reverse mapping)
-        display_value = raw_specs.get(key) if raw_specs else model_value
-        if display_value is None:
-            display_value = model_value
 
         # Статус
         if key in matched_specs:
@@ -215,7 +336,7 @@ def _create_detailed_sheet(wb: Workbook, match: Dict[str, Any], requirement: Dic
         elif key in missing_specs:
             status = "❌ Отсутствует"
             color = COLOR_RED
-            display_value = "—"
+            model_value = "—"
         elif key in different_specs:
             status = "❌ Не совпадает"
             color = COLOR_RED
@@ -223,7 +344,11 @@ def _create_detailed_sheet(wb: Workbook, match: Dict[str, Any], requirement: Dic
             status = "—"
             color = None
 
-        ws.append([readable_key, str(required_value), str(display_value), status])
+        # Форматирование значений для отображения
+        required_display = str(required_value) if required_value is not None else "—"
+        model_display = str(model_value) if model_value is not None else "—"
+
+        ws.append([readable_key, required_display, model_display, status])
 
         # Заливка строки
         if color:
@@ -237,7 +362,7 @@ def _create_detailed_sheet(wb: Workbook, match: Dict[str, Any], requirement: Dic
     # Автоподбор ширины
     _auto_size_columns(ws)
 
-    logger.debug(f"Detailed sheet created for {model_name}")
+    logger.debug(f"Detailed sheet created for {model_name} (version: {version}, match: {percentage}%)")
 
 
 def generate_report(
