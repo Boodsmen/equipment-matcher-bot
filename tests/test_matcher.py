@@ -7,7 +7,10 @@ from services.matcher import (
     calculate_match_percentage,
     categorize_matches,
     compare_spec_values,
+    compare_text_values,
     deduplicate_models,
+    extract_number,
+    extract_number_with_operator,
 )
 from tests.conftest import make_model
 
@@ -350,3 +353,265 @@ class TestCategorizeMatches:
         assert len(result["ideal"]) == 1
         assert len(result["partial"]) == 1
         assert len(result["not_matched"]) == 1
+
+
+# ════════════════════════════════════════════════════════════════
+# extract_number_with_operator
+# ════════════════════════════════════════════════════════════════
+
+
+class TestExtractNumberWithOperator:
+    def test_ge_unicode(self):
+        num, op = extract_number_with_operator("≥ 24")
+        assert num == 24.0
+        assert op == ">="
+
+    def test_le_unicode(self):
+        num, op = extract_number_with_operator("≤ 100")
+        assert num == 100.0
+        assert op == "<="
+
+    def test_ge_ascii(self):
+        num, op = extract_number_with_operator(">=24")
+        assert num == 24.0
+        assert op == ">="
+
+    def test_le_ascii(self):
+        num, op = extract_number_with_operator("<=100")
+        assert num == 100.0
+        assert op == "<="
+
+    def test_gt(self):
+        num, op = extract_number_with_operator("> 5")
+        assert num == 5.0
+        assert op == ">"
+
+    def test_lt(self):
+        num, op = extract_number_with_operator("< 50")
+        assert num == 50.0
+        assert op == "<"
+
+    def test_eq(self):
+        num, op = extract_number_with_operator("= 10")
+        assert num == 10.0
+        assert op == "="
+
+    def test_ne(self):
+        num, op = extract_number_with_operator("!= 0")
+        assert num == 0.0
+        assert op == "!="
+
+    def test_plain_number_default_ge(self):
+        num, op = extract_number_with_operator("24")
+        assert num == 24.0
+        assert op == ">="
+
+    def test_integer_default_ge(self):
+        num, op = extract_number_with_operator(24)
+        assert num == 24.0
+        assert op == ">="
+
+    def test_float_default_ge(self):
+        num, op = extract_number_with_operator(10.5)
+        assert num == 10.5
+        assert op == ">="
+
+    def test_none_returns_none(self):
+        num, op = extract_number_with_operator(None)
+        assert num is None
+        assert op == ">="
+
+    def test_bool_returns_none(self):
+        num, op = extract_number_with_operator(True)
+        assert num is None
+
+    def test_text_prefix_ne_menee(self):
+        num, op = extract_number_with_operator("не менее 500")
+        assert num == 500.0
+        assert op == ">="
+
+    def test_text_prefix_ne_bolee(self):
+        num, op = extract_number_with_operator("не более 100")
+        assert num == 100.0
+        assert op == "<="
+
+    def test_text_prefix_do(self):
+        num, op = extract_number_with_operator("до 1000")
+        assert num == 1000.0
+        assert op == "<="
+
+    def test_text_prefix_minimum(self):
+        num, op = extract_number_with_operator("минимум 50")
+        assert num == 50.0
+        assert op == ">="
+
+    def test_text_prefix_maximum(self):
+        num, op = extract_number_with_operator("максимум 200")
+        assert num == 200.0
+        assert op == "<="
+
+
+# ════════════════════════════════════════════════════════════════
+# compare_spec_values with operators
+# ════════════════════════════════════════════════════════════════
+
+
+class TestCompareSpecValuesWithOperators:
+    def test_le_operator_model_below(self):
+        # ≤ 100: модель с 80 → True
+        assert compare_spec_values("<=100", 80, "power_watt") is True
+
+    def test_le_operator_model_equal(self):
+        # ≤ 100: модель с 100 → True
+        assert compare_spec_values("<=100", 100, "power_watt") is True
+
+    def test_le_operator_model_above(self):
+        # ≤ 100: модель с 120 → False
+        assert compare_spec_values("<=100", 120, "power_watt") is False
+
+    def test_ge_operator_model_above(self):
+        # >= 24: модель с 48 → True
+        assert compare_spec_values(">=24", 48, "ports_1g") is True
+
+    def test_ge_operator_model_below(self):
+        # >= 24: модель с 12 → False
+        assert compare_spec_values(">=24", 12, "ports_1g") is False
+
+    def test_eq_operator_match(self):
+        assert compare_spec_values("=10", 10, "vlan_count") is True
+
+    def test_eq_operator_mismatch(self):
+        assert compare_spec_values("=10", 11, "vlan_count") is False
+
+    def test_gt_operator(self):
+        assert compare_spec_values(">5", 6, "x") is True
+        assert compare_spec_values(">5", 5, "x") is False
+
+    def test_lt_operator(self):
+        assert compare_spec_values("<50", 49, "x") is True
+        assert compare_spec_values("<50", 50, "x") is False
+
+    def test_le_allow_lower_tolerance(self):
+        # ≤ 100 with allow_lower: 105% = 105, model 104 → True
+        assert compare_spec_values("<=100", 104, "power_watt", allow_lower=True) is True
+
+    def test_le_allow_lower_too_high(self):
+        # ≤ 100 with allow_lower: 105% = 105, model 110 → False
+        assert compare_spec_values("<=100", 110, "power_watt", allow_lower=True) is False
+
+    def test_backward_compat_plain_number(self):
+        # Без оператора — дефолт >=, как и раньше
+        assert compare_spec_values(24, 24, "ports") is True
+        assert compare_spec_values(24, 48, "ports") is True
+        assert compare_spec_values(24, 12, "ports") is False
+
+    def test_unicode_le_string(self):
+        # Unicode ≤ в строке
+        assert compare_spec_values("≤100", 80, "power") is True
+        assert compare_spec_values("≤100", 120, "power") is False
+
+    def test_unicode_ge_string(self):
+        assert compare_spec_values("≥24", 24, "ports") is True
+        assert compare_spec_values("≥24", 12, "ports") is False
+
+
+# ════════════════════════════════════════════════════════════════
+# compare_text_values
+# ════════════════════════════════════════════════════════════════
+
+
+class TestCompareTextValues:
+    def test_exact_match(self):
+        assert compare_text_values("Layer 3", "Layer 3") is True
+
+    def test_case_insensitive(self):
+        assert compare_text_values("Layer 3", "layer 3") is True
+
+    def test_partial_match_req_in_model(self):
+        # "Управляемый" ⊂ "Управляемый L3"
+        assert compare_text_values("Управляемый", "Управляемый L3") is True
+
+    def test_partial_match_model_in_req(self):
+        # Requirement "Управляемый L3" should NOT match model "Управляемый" —
+        # the model does not specify L3, so the requirement is not satisfied.
+        assert compare_text_values("Управляемый L3", "Управляемый") is False
+
+    def test_boolean_yes_synonyms(self):
+        assert compare_text_values("Да", "Есть") is True
+        assert compare_text_values("yes", "поддерживается") is True
+
+    def test_boolean_no_synonyms(self):
+        assert compare_text_values("Нет", "Отсутствует") is True
+        assert compare_text_values("no", "не поддерживается") is True
+
+    def test_boolean_yes_vs_no(self):
+        assert compare_text_values("Да", "Нет") is False
+
+    def test_comma_separated_intersection(self):
+        assert compare_text_values("OSPF, BGP", "RIP, OSPF, IS-IS") is True
+
+    def test_comma_separated_no_intersection(self):
+        assert compare_text_values("OSPF, BGP", "RIP, IS-IS") is False
+
+    def test_no_match(self):
+        assert compare_text_values("Layer 3", "Layer 2") is False
+
+    def test_whitespace_handling(self):
+        assert compare_text_values("  AC  ", "AC") is True
+
+
+# ════════════════════════════════════════════════════════════════
+# compare_spec_values with text (integration)
+# ════════════════════════════════════════════════════════════════
+
+
+class TestCompareSpecValuesText:
+    def test_partial_match_via_compare_spec(self):
+        # "Управляемый" should match "Управляемый L3" through compare_text_values
+        assert compare_spec_values("Управляемый", "Управляемый L3", "type") is True
+
+    def test_boolean_synonym_via_compare_spec(self):
+        assert compare_spec_values("Да", "Есть", "feature") is True
+
+    def test_string_mismatch_still_fails(self):
+        assert compare_spec_values("Layer 3", "Layer 2", "type") is False
+
+
+# ════════════════════════════════════════════════════════════════
+# calculate_match_percentage with unmapped_specs
+# ════════════════════════════════════════════════════════════════
+
+
+class TestCalculateMatchPercentageUnmapped:
+    def test_unmapped_specs_field_exists(self):
+        required = {"ports_1g": 24, "unknown_key": 42}
+        model = {"ports_1g": 24}
+        result = calculate_match_percentage(required, model)
+        assert "unmapped_specs" in result
+        assert "unknown_key" in result["unmapped_specs"]
+
+    def test_missing_specs_backward_compat(self):
+        required = {"ports_1g": 24, "unknown_key": 42}
+        model = {"ports_1g": 24}
+        result = calculate_match_percentage(required, model)
+        # missing_specs is an alias for unmapped_specs
+        assert result["missing_specs"] == result["unmapped_specs"]
+
+    def test_empty_required_has_unmapped(self):
+        result = calculate_match_percentage({}, {"a": 1})
+        assert result["unmapped_specs"] == []
+
+    def test_all_unmapped(self):
+        required = {"a": 1, "b": 2}
+        model = {}
+        result = calculate_match_percentage(required, model)
+        assert len(result["unmapped_specs"]) == 2
+        assert result["different_specs"] == {}
+
+    def test_unmapped_vs_different_separation(self):
+        required = {"ports_1g": 24, "power_watt": 200, "missing_key": 42}
+        model = {"ports_1g": 24, "power_watt": 100}
+        result = calculate_match_percentage(required, model)
+        assert "ports_1g" in result["matched_specs"]
+        assert "missing_key" in result["unmapped_specs"]
+        assert "power_watt" in result["different_specs"]

@@ -53,11 +53,13 @@ async def handle_document(message: Message, bot: Bot) -> None:
     os.makedirs(TEMP_DIR, exist_ok=True)
     file_path = os.path.join(TEMP_DIR, f"{user_id}_{file_name}")
 
+    import time as _time
     try:
         # Download file
         file = await bot.get_file(doc.file_id)
         await bot.download_file(file.file_path, file_path)
         logger.info(f"File downloaded to {file_path}")
+        _start_time = _time.time()
 
         # HYBRID APPROACH: Try table parser first, then AI fallback
         await status_msg.edit_text("Анализирую структуру документа...")
@@ -165,7 +167,9 @@ async def handle_document(message: Message, bot: Bot) -> None:
             match_results=match_results,
             output_dir=TEMP_DIR,
             threshold=settings.match_threshold,
-            min_percentage=80.0,  # Показывать только модели с совпадением >= 80%
+            min_percentage=80.0,
+            filename=file_name,
+            processing_time=_time.time() - _start_time,
         )
 
         # Save search history (non-critical — don't break main flow)

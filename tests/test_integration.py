@@ -160,30 +160,30 @@ class TestFullCycle:
 
     def test_excel_report_has_version_column(self, tmp_path):
         """
-        Проверка что Excel отчет содержит колонку "Версия".
+        Проверка структуры нового Excel отчета (4 листа, сводка, все совпадения, детали).
         """
         from services.excel_generator import generate_report
 
-        # Подготовка тестовых данных
         match_results = {
             "results": [
                 {
                     "requirement": {
                         "item_name": "Test Item",
-                        "required_specs": {"ports_1g_rj45": 24},
+                        "required_specs": {"ports_1g_8p8c": 24},
                     },
                     "matches": {
                         "ideal": [
                             {
                                 "model_id": 1,
                                 "model_name": "MES3710P",
-                                "category": "Коммутаторы",
-                                "source_file": "MES3710P_v29.csv",
+                                "category": "Управляемый",
+                                "source_file": "MES3710P_v29",
                                 "match_percentage": 100.0,
-                                "matched_specs": ["ports_1g_rj45"],
+                                "matched_specs": ["ports_1g_8p8c"],
+                                "unmapped_specs": [],
                                 "missing_specs": [],
                                 "different_specs": {},
-                                "specifications": {"ports_1g_rj45": 24},
+                                "specifications": {"ports_1g_8p8c": 24},
                                 "raw_specifications": {},
                             }
                         ],
@@ -200,30 +200,34 @@ class TestFullCycle:
             },
         }
 
-        requirements = {"items": [{"item_name": "Test Item", "required_specs": {"ports_1g_rj45": 24}}]}
+        requirements = {"items": [{"item_name": "Test Item", "required_specs": {"ports_1g_8p8c": 24}}]}
 
-        # Генерация отчета
         output_dir = str(tmp_path)
-        file_path = generate_report(requirements, match_results, output_dir=output_dir)
+        file_path = generate_report(
+            requirements, match_results, output_dir=output_dir,
+            filename="test.docx", processing_time=1.5,
+        )
 
-        # Проверка что файл создан
         assert os.path.exists(file_path)
 
-        # Проверка структуры (требует openpyxl)
         try:
             from openpyxl import load_workbook
 
             wb = load_workbook(file_path)
-            ws = wb["Сводка"]
+            # Check 4-sheet structure
+            assert "Сводка" in wb.sheetnames
+            assert "Все совпадения" in wb.sheetnames
+            assert "Детали совпадений" in wb.sheetnames
+            assert "Не сопоставленные" in wb.sheetnames
 
-            # Проверяем заголовки
-            headers = [cell.value for cell in ws[1]]
-            assert "Версия" in headers, "Column 'Версия' not found in Excel report!"
+            # Сводка: first row is title
+            ws_summary = wb["Сводка"]
+            assert ws_summary.cell(row=1, column=1).value == "Результаты сопоставления оборудования"
 
-            # Проверяем что версия отображается правильно
-            version_col_idx = headers.index("Версия") + 1
-            version_value = ws.cell(row=2, column=version_col_idx).value
-            assert version_value == "v29", f"Expected 'v29', got '{version_value}'"
+            # Все совпадения: has model MES3710P
+            ws_all = wb["Все совпадения"]
+            model_names = [ws_all.cell(row=r, column=2).value for r in range(2, ws_all.max_row + 1)]
+            assert "MES3710P" in model_names
 
         except ImportError:
             pytest.skip("openpyxl not installed, skipping Excel structure check")
@@ -240,13 +244,13 @@ class TestFullCycle:
         assert isinstance(reverse_mapping, dict)
         assert len(reverse_mapping) > 0
 
-        # Проверяем некоторые ключи
-        assert "ports_1g_rj45" in reverse_mapping
-        assert "power_watt" in reverse_mapping
+        # Проверяем некоторые ключи (ports_1g_8p8c = RJ-45 GigabitEthernet ports)
+        assert "ports_1g_8p8c" in reverse_mapping
+        assert "ports_1g_sfp" in reverse_mapping
 
         # Проверяем что значения читаемые (на русском)
-        assert isinstance(reverse_mapping["ports_1g_rj45"], str)
-        assert len(reverse_mapping["ports_1g_rj45"]) > 0
+        assert isinstance(reverse_mapping["ports_1g_8p8c"], str)
+        assert len(reverse_mapping["ports_1g_8p8c"]) > 0
 
 
 class TestDatabaseIntegration:

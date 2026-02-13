@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,15 +52,24 @@ async def get_all_models() -> Sequence[Model]:
 async def get_models_by_category(category: str) -> Sequence[Model]:
     async with async_session_maker() as session:
         result = await session.execute(
-            select(Model).where(Model.category == category)
+            select(Model).where(Model.category.ilike(category))
         )
         return result.scalars().all()
 
 
 async def get_model_by_name(model_name: str) -> Sequence[Model]:
+    """Search models by name. Exact matches come first, then substring matches."""
     async with async_session_maker() as session:
         result = await session.execute(
-            select(Model).where(Model.model_name.ilike(f"%{model_name}%"))
+            select(Model)
+            .where(Model.model_name.ilike(f"%{model_name}%"))
+            .order_by(
+                # Exact match (case-insensitive) first
+                case(
+                    (func.lower(Model.model_name) == model_name.lower(), 0),
+                    else_=1,
+                )
+            )
         )
         return result.scalars().all()
 

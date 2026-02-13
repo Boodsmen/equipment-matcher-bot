@@ -1,5 +1,5 @@
 """
-Unit тесты для функции extract_number() из services.matcher.
+Unit тесты для функций extract_number() и extract_number_with_operator() из services.matcher.
 
 Покрывает все поддерживаемые форматы:
 - Простые числа
@@ -8,6 +8,7 @@ Unit тесты для функции extract_number() из services.matcher.
 - Диапазоны
 - Умножение
 - Префиксы
+- Операторы сравнения (≥, ≤, >, <, =, !=)
 - Edge cases
 """
 
@@ -19,204 +20,228 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from services.matcher import compare_spec_values
-
-
-# Вспомогательная функция для извлечения числа (для тестирования внутренней логики)
-def extract_number_from_compare(required_value, model_value):
-    """
-    Тестовая функция для извлечения числа через compare_spec_values.
-
-    Мы не можем напрямую вызвать внутреннюю функцию extract_number(),
-    но можем протестировать её через числовое сравнение.
-    """
-    # Хак: используем compare_spec_values для тестирования extract_number()
-    # Если сравнение работает, значит extract_number() корректно извлек число
-    import re
-
-    # Копируем логику extract_number из matcher.py для тестирования
-    def extract_number(val):
-        if isinstance(val, (int, float)):
-            return float(val)
-
-        if not isinstance(val, str):
-            return None
-
-        val_normalized = val.replace(',', '.')
-
-        # Диапазоны
-        range_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:-|до)\s*(\d+(?:\.\d+)?)', val_normalized)
-        if range_match:
-            return max(float(range_match.group(1)), float(range_match.group(2)))
-
-        # Умножение
-        mult_match = re.search(r'(\d+)\s*(?:x|×|блок\w*\s+по)\s*(\d+)', val_normalized, re.IGNORECASE)
-        if mult_match:
-            return float(mult_match.group(1)) * float(mult_match.group(2))
-
-        # Префиксы
-        prefix_match = re.search(r'(?:до|не\s+менее|минимум|максимум)\s+(\d+(?:\.\d+)?)', val_normalized, re.IGNORECASE)
-        if prefix_match:
-            return float(prefix_match.group(1))
-
-        # Простое число
-        match = re.search(r"[-+]?\d*\.?\d+", val_normalized)
-        if match:
-            return float(match.group())
-
-        return None
-
-    return extract_number(required_value), extract_number(model_value)
+from services.matcher import compare_spec_values, extract_number, extract_number_with_operator
 
 
 class TestSimpleNumbers:
     """Тесты для простых числовых значений."""
 
     def test_integer(self):
-        req, model = extract_number_from_compare(24, 24)
-        assert req == 24.0
-        assert model == 24.0
+        assert extract_number(24) == 24.0
 
     def test_float(self):
-        req, model = extract_number_from_compare(200.5, 200.5)
-        assert req == 200.5
-        assert model == 200.5
+        assert extract_number(200.5) == 200.5
 
     def test_negative(self):
-        req, model = extract_number_from_compare(-40, -40)
-        assert req == -40.0
-        assert model == -40.0
+        assert extract_number(-40) == -40.0
 
     def test_zero(self):
-        req, model = extract_number_from_compare(0, 0)
-        assert req == 0.0
-        assert model == 0.0
+        assert extract_number(0) == 0.0
 
 
 class TestStringsWithUnits:
     """Тесты для строк с единицами измерения."""
 
     def test_ports(self):
-        req, _ = extract_number_from_compare("24 порта", None)
-        assert req == 24.0
+        assert extract_number("24 порта") == 24.0
 
     def test_watts(self):
-        req, _ = extract_number_from_compare("200 Вт", None)
-        assert req == 200.0
+        assert extract_number("200 Вт") == 200.0
 
     def test_gigabytes(self):
-        req, _ = extract_number_from_compare("2 ГБ", None)
-        assert req == 2.0
+        assert extract_number("2 ГБ") == 2.0
 
     def test_temperature(self):
-        req, _ = extract_number_from_compare("-40°C", None)
-        assert req == -40.0
+        assert extract_number("-40°C") == -40.0
 
     def test_mixed_case(self):
-        req, _ = extract_number_from_compare("100 МГц", None)
-        assert req == 100.0
+        assert extract_number("100 МГц") == 100.0
 
 
 class TestFractionalNumbers:
     """Тесты для дробных чисел."""
 
     def test_dot_separator(self):
-        req, _ = extract_number_from_compare("1.5 Гбит/с", None)
-        assert req == 1.5
+        assert extract_number("1.5 Гбит/с") == 1.5
 
     def test_comma_separator(self):
-        req, _ = extract_number_from_compare("2,5 ГБ", None)
-        assert req == 2.5
+        assert extract_number("2,5 ГБ") == 2.5
 
     def test_multiple_dots(self):
         # Ожидаем первое число
-        req, _ = extract_number_from_compare("1.2.3.4", None)
-        assert req == 1.2
+        assert extract_number("1.2.3.4") == 1.2
 
 
 class TestRanges:
     """Тесты для диапазонов (берем максимум)."""
 
     def test_simple_range(self):
-        req, _ = extract_number_from_compare("10-20", None)
-        assert req == 20.0
+        assert extract_number("10-20") == 20.0
 
     def test_range_with_words(self):
-        req, _ = extract_number_from_compare("от 100 до 200", None)
-        assert req == 200.0
+        assert extract_number("от 100 до 200") == 200.0
 
     def test_range_reversed(self):
         # 200-100 все равно берем максимум
-        req, _ = extract_number_from_compare("200-100", None)
-        assert req == 200.0
+        assert extract_number("200-100") == 200.0
 
     def test_range_with_units(self):
-        req, _ = extract_number_from_compare("10-20 портов", None)
-        assert req == 20.0
+        assert extract_number("10-20 портов") == 20.0
 
 
 class TestMultiplication:
     """Тесты для умножения."""
 
     def test_simple_multiplication(self):
-        req, _ = extract_number_from_compare("2x4", None)
-        assert req == 8.0
+        assert extract_number("2x4") == 8.0
 
     def test_multiplication_with_x_symbol(self):
-        req, _ = extract_number_from_compare("4×8", None)
-        assert req == 32.0
+        assert extract_number("4×8") == 32.0
 
     def test_blocks_pattern(self):
-        req, _ = extract_number_from_compare("4 блока по 8", None)
-        assert req == 32.0
+        assert extract_number("4 блока по 8") == 32.0
 
     def test_blocks_with_units(self):
-        req, _ = extract_number_from_compare("2 блока по 10 портов", None)
-        assert req == 20.0
+        assert extract_number("2 блока по 10 портов") == 20.0
 
 
 class TestPrefixes:
     """Тесты для префиксов."""
 
     def test_prefix_up_to(self):
-        req, _ = extract_number_from_compare("до 1000", None)
-        assert req == 1000.0
+        assert extract_number("до 1000") == 1000.0
 
     def test_prefix_minimum(self):
-        req, _ = extract_number_from_compare("не менее 500", None)
-        assert req == 500.0
+        assert extract_number("не менее 500") == 500.0
 
     def test_prefix_minimum_short(self):
-        req, _ = extract_number_from_compare("минимум 100", None)
-        assert req == 100.0
+        assert extract_number("минимум 100") == 100.0
 
     def test_prefix_maximum(self):
-        req, _ = extract_number_from_compare("максимум 250", None)
-        assert req == 250.0
+        assert extract_number("максимум 250") == 250.0
+
+
+class TestOperatorsInExtractNumber:
+    """Тесты: extract_number корректно извлекает число даже при наличии оператора."""
+
+    def test_ge_unicode(self):
+        assert extract_number("≥ 24") == 24.0
+
+    def test_le_unicode(self):
+        assert extract_number("≤ 100") == 100.0
+
+    def test_ge_ascii(self):
+        assert extract_number(">=24") == 24.0
+
+    def test_le_ascii(self):
+        assert extract_number("<=100") == 100.0
+
+    def test_gt(self):
+        assert extract_number("> 5") == 5.0
+
+    def test_lt(self):
+        assert extract_number("< 50") == 50.0
+
+    def test_eq(self):
+        assert extract_number("= 10") == 10.0
 
 
 class TestEdgeCases:
     """Тесты для граничных случаев."""
 
     def test_none_value(self):
-        req, _ = extract_number_from_compare(None, None)
-        assert req is None
+        assert extract_number(None) is None
 
     def test_empty_string(self):
-        req, _ = extract_number_from_compare("", None)
-        assert req is None
+        assert extract_number("") is None
 
     def test_no_numbers(self):
-        req, _ = extract_number_from_compare("нет данных", None)
-        assert req is None
+        assert extract_number("нет данных") is None
 
     def test_only_text(self):
-        req, _ = extract_number_from_compare("неопределено", None)
-        assert req is None
+        assert extract_number("неопределено") is None
 
-    def test_boolean(self):
-        req, _ = extract_number_from_compare(True, None)
-        assert req is None  # Boolean не преобразуется в число через extract_number
+    def test_boolean_true(self):
+        assert extract_number(True) is None
+
+    def test_boolean_false(self):
+        assert extract_number(False) is None
+
+
+class TestExtractNumberWithOperator:
+    """Тесты для extract_number_with_operator()."""
+
+    def test_ge_unicode(self):
+        num, op = extract_number_with_operator("≥ 24")
+        assert num == 24.0 and op == ">="
+
+    def test_le_unicode(self):
+        num, op = extract_number_with_operator("≤ 100")
+        assert num == 100.0 and op == "<="
+
+    def test_ge_ascii(self):
+        num, op = extract_number_with_operator(">=24")
+        assert num == 24.0 and op == ">="
+
+    def test_le_ascii(self):
+        num, op = extract_number_with_operator("<=100")
+        assert num == 100.0 and op == "<="
+
+    def test_gt(self):
+        num, op = extract_number_with_operator("> 5")
+        assert num == 5.0 and op == ">"
+
+    def test_lt(self):
+        num, op = extract_number_with_operator("< 50")
+        assert num == 50.0 and op == "<"
+
+    def test_eq(self):
+        num, op = extract_number_with_operator("= 10")
+        assert num == 10.0 and op == "="
+
+    def test_ne_unicode(self):
+        num, op = extract_number_with_operator("≠ 0")
+        assert num == 0.0 and op == "!="
+
+    def test_ne_ascii(self):
+        num, op = extract_number_with_operator("!= 0")
+        assert num == 0.0 and op == "!="
+
+    def test_plain_string_number(self):
+        num, op = extract_number_with_operator("24")
+        assert num == 24.0 and op == ">="
+
+    def test_plain_int(self):
+        num, op = extract_number_with_operator(24)
+        assert num == 24.0 and op == ">="
+
+    def test_none(self):
+        num, op = extract_number_with_operator(None)
+        assert num is None and op == ">="
+
+    def test_bool(self):
+        num, op = extract_number_with_operator(True)
+        assert num is None
+
+    def test_text_ne_menee(self):
+        num, op = extract_number_with_operator("не менее 500")
+        assert num == 500.0 and op == ">="
+
+    def test_text_ne_bolee(self):
+        num, op = extract_number_with_operator("не более 100")
+        assert num == 100.0 and op == "<="
+
+    def test_text_do(self):
+        num, op = extract_number_with_operator("до 1000")
+        assert num == 1000.0 and op == "<="
+
+    def test_text_minimum(self):
+        num, op = extract_number_with_operator("минимум 50")
+        assert num == 50.0 and op == ">="
+
+    def test_text_maximum(self):
+        num, op = extract_number_with_operator("максимум 200")
+        assert num == 200.0 and op == "<="
 
 
 class TestCompareSpecValues:
@@ -259,6 +284,18 @@ class TestCompareSpecValues:
     def test_multiplication_extraction(self):
         result = compare_spec_values("2x4", 10, "calc", allow_lower=False)
         assert result is True  # model (10) >= required (8)
+
+    def test_le_operator_model_below(self):
+        # ≤ 100: модель с 80 → True
+        assert compare_spec_values("<=100", 80, "power") is True
+
+    def test_le_operator_model_above(self):
+        # ≤ 100: модель с 120 → False
+        assert compare_spec_values("<=100", 120, "power") is False
+
+    def test_ge_operator(self):
+        assert compare_spec_values(">=24", 24, "ports") is True
+        assert compare_spec_values(">=24", 12, "ports") is False
 
 
 if __name__ == "__main__":

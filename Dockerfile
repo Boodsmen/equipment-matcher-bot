@@ -14,4 +14,7 @@ COPY . .
 
 RUN mkdir -p logs temp_files
 
-CMD ["python", "bot.py"]
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]

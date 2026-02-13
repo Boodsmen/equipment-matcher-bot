@@ -37,6 +37,8 @@ CATEGORY_MAPPING = {
     "ME": "Коммутаторы",
     "ROS4": "Коммутаторы",
     "ROS6": "Коммутаторы",
+    "1805": "Маршрутизаторы",   # 1805_cleaned.csv contains ESR models
+    "T-TTv2": "Маршрутизаторы", # T-TTv2_cleaned.csv contains ESR models
 }
 
 # Column names that typically hold the model name
@@ -69,11 +71,20 @@ def load_normalization_map() -> Dict:
 
 
 def normalize_column_name(column: str, normalization_map: Dict) -> str:
-    """Map a CSV column name to its canonical key."""
+    """Map a CSV column name to its canonical key.
+
+    Strips pandas duplicate-column suffixes (.1, .2, ...) before lookup,
+    so that duplicate columns from Excel (same characteristic in two standards)
+    are correctly mapped instead of silently dropped.
+    Case-insensitive lookup to be consistent with table_parser.py.
+    """
+    # Strip pandas auto-added duplicate suffixes: "Поле.1" → "Поле"
+    clean_col = re.sub(r'\.\d+$', '', column.strip())
+    clean_col_lower = clean_col.lower()
     for canonical_key, synonyms in normalization_map.get("canonical_keys", {}).items():
-        if column in synonyms:
+        if any(clean_col_lower == s.lower() for s in synonyms):
             return canonical_key
-    return column
+    return clean_col
 
 
 # Numeric specification keys
@@ -96,7 +107,9 @@ BOOLEAN_KEYS = {
 }
 
 COMPLEX_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
-    r'\bпо\b', r'\bх\b', r'\bx\b', r'[+\-*/]',
+    r'\bпо\b',          # "4 блока по 8 портов"
+    r'(?<!\d)[хx](?!\d)',  # кириллическое/латинское "x" не между цифрами (НЕ "2x4")
+    r'[+*/]',           # арифметика (кроме минуса — он может быть в диапазонах)
 ]]
 
 
@@ -132,12 +145,17 @@ def clean_spec_value(key: str, value: Any) -> Optional[Any]:
     # Boolean keys
     if key in BOOLEAN_KEYS:
         val_lower = value_str.lower()
-        positive = ("да", "yes", "+", "true", "поддерживается", "есть", "имеется")
-        negative = ("нет", "no", "-", "false", "не поддерживается", "отсутствует")
-        if any(p in val_lower for p in positive):
-            return True
+        # Check negative FIRST — "не поддерживается" contains "поддерживается"
+        negative = ("нет", "no", "false", "не поддерживается", "отсутствует")
+        positive = ("да", "yes", "true", "поддерживается", "есть", "имеется")
         if any(n in val_lower for n in negative):
             return False
+        if val_lower == "+":
+            return True
+        if val_lower == "-":
+            return False
+        if any(p in val_lower for p in positive):
+            return True
         return None
 
     # Text — trim whitespace
@@ -159,10 +177,16 @@ def extract_source_from_filename(filename: str) -> str:
 def extract_category(source_file: str, row_data: Dict) -> Optional[str]:
     """Determine equipment category from row data or filename."""
     # Check if the row has a category column
+    _INVALID_VALUES = {"", "-", "—", "nan", "n/a", "н/д"}
     for col in ("Тип коммутатора", "Тип устройства", "Категория"):
         val = row_data.get(col)
-        if val and str(val).strip():
-            return str(val).strip()
+        if val is None:
+            continue
+        if isinstance(val, float) and pd.isna(val):
+            continue
+        val_str = str(val).strip()
+        if val_str and val_str.lower() not in _INVALID_VALUES:
+            return val_str
     # Fallback to filename-based mapping
     for prefix, cat in CATEGORY_MAPPING.items():
         if prefix.lower() in source_file.lower():
@@ -224,14 +248,16 @@ def parse_csv_file(
         for column, value in row_dict.items():
             if column == model_col or column in SKIP_COLUMNS:
                 continue
-            # Save raw value
+            # Save raw value (use original column name)
             if value is not None and not (isinstance(value, float) and pd.isna(value)):
                 raw_specifications[column] = str(value)
 
             canonical_key = normalize_column_name(column, normalization_map)
             clean_value = clean_spec_value(canonical_key, value)
             if clean_value is not None:
-                specifications[canonical_key] = clean_value
+                # For duplicate columns (.1/.2 suffixes) keep first non-None value
+                if canonical_key not in specifications:
+                    specifications[canonical_key] = clean_value
 
         category = extract_category(source_file, row_dict)
 
